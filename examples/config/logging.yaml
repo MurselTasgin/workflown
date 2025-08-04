@@ -1,0 +1,51 @@
+# Logging Configuration for Workflown Examples
+
+logging:
+  level: "DEBUG"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  enable_console: true
+  enable_file: true
+  enable_structured: true
+  
+  # Physical log file paths
+  file_path: "./examples/logs/workflown.log"
+  structured_file_path: "./examples/logs/workflown-structured.log"
+  
+  # File rotation settings
+  max_file_size: 5242880  # 5MB in bytes
+  backup_count: 3
+  
+  # Log formatting options
+  include_location: true
+  include_context: true
+  colored_console: true
+  
+  # Correlation ID settings
+  correlation_id_header: "X-Correlation-ID"
+
+# Example-specific logging overrides
+examples:
+  web_research:
+    log_level: "INFO"
+    enable_console: true
+    enable_file: true
+    file_path: "./examples/logs/web-research.log"
+    structured_file_path: "./examples/logs/web-research-structured.log"
+  
+  executors:
+    web_search:
+      log_level: "DEBUG"
+      enable_console: false
+      enable_file: true
+      file_path: "./examples/logs/web-search-executor.log"
+    
+    summarizer:
+      log_level: "INFO"
+      enable_console: false
+      enable_file: true
+      file_path: "./examples/logs/summarizer-executor.log"
+      
+    composer:
+      log_level: "INFO"
+      enable_console: false
+      enable_file: true
+      file_path: "./examples/logs/composer-executor.log" 

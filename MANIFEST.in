@@ -1,0 +1,34 @@
+include README.md
+include LICENSE
+include requirements.txt
+include pyproject.toml
+
+# Include example files
+recursive-include examples *.py *.yaml *.yml *.json *.md
+
+# Include configuration files
+recursive-include workflown/core/config *.yaml *.yml *.json
+
+# Include documentation
+recursive-include docs *.md *.rst *.txt
+
+# Include tests
+recursive-include tests *.py
+
+# Exclude development files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude .git*
+global-exclude .DS_Store
+global-exclude *.log
+global-exclude .coverage
+global-exclude htmlcov/
+global-exclude .pytest_cache/
+global-exclude .mypy_cache/
+global-exclude .tox/
+global-exclude .venv/
+global-exclude venv/
+global-exclude env/
+global-exclude .env 

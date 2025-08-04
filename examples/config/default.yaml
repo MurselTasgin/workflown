@@ -1,0 +1,46 @@
+# Default Configuration for Workflown Examples
+
+framework:
+  debug: true
+  log_level: "DEBUG"
+  max_concurrent_tasks: 5
+
+database:
+  url: "sqlite:///examples/data/workflown.db"
+  pool_size: 5
+
+storage:
+  backend: "filesystem"
+  path: "./examples/data"
+
+api:
+  host: "localhost"
+  port: 8000
+
+security:
+  secret_key: "example-secret-key-change-in-production"
+  token_expiry: 3600
+
+# Example-specific configuration
+examples:
+  web_research:
+    default_query: "artificial intelligence"
+    max_search_results: 5
+    summary_types: ["brief", "detailed", "comprehensive"]
+    output_formats: ["markdown", "html", "json"]
+    
+  executors:
+    web_search:
+      timeout: 30
+      max_concurrent: 3
+      mock_data: true
+    
+    summarizer:
+      timeout: 60
+      max_concurrent: 2
+      max_summary_length: 1000
+      
+    composer:
+      timeout: 30
+      max_concurrent: 1
+      supported_formats: ["markdown", "html", "json"]
