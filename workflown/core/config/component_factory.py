@@ -143,8 +143,13 @@ class ComponentRegistry:
                 from ..agents.base_agent import BaseAgent
                 return issubclass(cls, BaseAgent)
             elif component_type == ComponentType.TOOL:
-                from ..tools.base_tool import BaseTool
-                return issubclass(cls, BaseTool)
+                # Try to import core BaseTool, fallback to checking for execute method
+                try:
+                    from ..tools.base_tool import BaseTool
+                    return issubclass(cls, BaseTool)
+                except ImportError:
+                    # If core BaseTool doesn't exist, check if class has required methods
+                    return hasattr(cls, 'execute') and callable(getattr(cls, 'execute'))
             elif component_type == ComponentType.STORAGE:
                 from ..storage.base_storage import BaseStorage
                 return issubclass(cls, BaseStorage)
@@ -212,7 +217,11 @@ class ComponentFactory:
             
             # Create instance
             if instance_id:
-                instance = component_class(component_id=instance_id, config=config)
+                # Try different parameter names for different component types
+                if component_type == ComponentType.TOOL:
+                    instance = component_class(tool_id=instance_id, config=config)
+                else:
+                    instance = component_class(component_id=instance_id, config=config)
             else:
                 instance = component_class(config=config)
             

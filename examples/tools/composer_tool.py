@@ -1,372 +1,286 @@
 """
-Composer Tool
+LLM Composer Tool
 
-Uses Azure OpenAI for text generation, summarization, and composition.
+Uses Large Language Models to compose, summarize, and analyze text content.
+Integrates with Azure OpenAI for actual LLM processing.
 """
 
 import asyncio
 import json
-import aiohttp
-from typing import Dict, List, Any, Optional
+import os
 from datetime import datetime
-from openai import AzureOpenAI
+from typing import Dict, List, Any, Optional, Union
+from pathlib import Path
+import sys
 
-from .base_tool import BaseTool, ToolResult, ToolCapability
-from workflown.core.config.central_config import get_config
+# Add parent directory for imports
+sys.path.insert(0, str(Path(__file__).parent))
+
+from base_tool import BaseTool, ToolResult, ToolCapability
+from llm_tool import LLMTool
 
 
 class ComposerTool(BaseTool):
     """
-    Tool for text generation and composition using LLM.
+    LLM Composer tool for text generation, summarization, and analysis.
     
-    Supports various text generation tasks including:
-    - Summarization
-    - Report generation
-    - Content composition
-    - Text analysis
+    Integrates with Azure OpenAI LLM tool for actual text processing.
     """
     
-    def __init__(
-        self,
-        tool_id: str = None,
-        config: Dict[str, Any] = None
-    ):
-        """
-        Initialize the composer tool.
-        
-        Args:
-            tool_id: Unique tool identifier
-            config: Configuration dictionary
-        """
+    def __init__(self, tool_id: str = None, config: Dict[str, Any] = None):
         super().__init__(
-            tool_id=tool_id,
+            tool_id=tool_id or "composer_tool",
             name="ComposerTool",
-            description="Generates and composes text using LLM",
-            capabilities=[
-                ToolCapability.TEXT_GENERATION,
-                ToolCapability.TEXT_SUMMARIZATION,
-                ToolCapability.DATA_PROCESSING
-            ],
+            description="Uses LLMs for text composition, summarization, and analysis",
+            capabilities=[ToolCapability.TEXT_GENERATION, ToolCapability.TEXT_SUMMARIZATION],
             config=config,
-            max_concurrent_operations=5
+            max_concurrent_operations=3
         )
         
-        # Session for HTTP requests
-        self.session = None
+        # Configuration
+        self.temperature = self.config.get("temperature", 0.7)
+        self.max_tokens = self.config.get("max_tokens", 2000)
+        self.max_input_tokens = self.config.get("max_input_tokens", 8000)
         
-        # LLM configuration (will be set in _initialize)
-        self.llm_config = None
-        self.api_key = None
-        self.model = None
-        self.max_tokens = None
-        self.temperature = None
-        self.api_base = None
-        self.api_endpoint = None
+        # Initialize LLM tool
+        self.llm_tool = LLMTool(
+            tool_id=f"{self.tool_id}_llm",
+            config=self.config
+        )
         
-        # Prompt templates (will be set in _initialize)
-        self.prompt_templates = None
-        # Call initialize after all attributes are set
-        self._initialize()
-    
-    def _initialize(self):
-        """Initialize Azure OpenAI components."""
-        print(f"DEBUG: ComposerTool._initialize() called for tool_id: {self.tool_id}")
-        
-        # Get Azure OpenAI configuration from central config
-        central_config = get_config()
-        azure_config = central_config.get_azure_openai_config()
-        
-        # Override with local config if provided
-        if self.config.get("azure_openai"):
-            azure_config.update(self.config["azure_openai"])
-        
-        # Azure OpenAI configuration
-        self.api_key = azure_config.get("api_key")
-        self.endpoint = azure_config.get("endpoint")
-        self.deployment_name = azure_config.get("deployment_name", "gpt-4o-mini")
-        self.api_version = azure_config.get("api_version", "2024-02-15-preview")
-        self.max_tokens = azure_config.get("max_tokens", 2000)
-        self.temperature = azure_config.get("temperature", 0.7)
-
-        print("--------------------------------")       
-        print(f"Azure OpenAI configuration: API key: {self.api_key}")
-        print(f"Azure Endpoint: {self.endpoint}")
-        print(f"Deployment name: {self.deployment_name}")
-        print(f"API version: {self.api_version}")
-        print(f"Max tokens: {self.max_tokens}")
-        print(f"Temperature: {self.temperature}")
-        print("--------------------------------")
-
-        # API endpoint for Azure OpenAI
-        if self.endpoint:
-            self.api_endpoint = f"{self.endpoint}/openai/deployments/{self.deployment_name}/chat/completions?api-version={self.api_version}"
-        else:
-            self.api_endpoint = None
-        
-        # Prompt templates
-        self.prompt_templates = {
-            "summarize": self._get_summarize_prompt(),
-            "compose_report": self._get_compose_report_prompt(),
-            "analyze": self._get_analyze_prompt(),
-            "generate": self._get_generate_prompt()
-        }
-        
-        try:
-            # Create Azure OpenAI client with correct parameters for v1.98.0
-            client_params = {
-                "api_key": self.api_key,
-                "azure_endpoint": self.endpoint,
-                "azure_deployment": self.deployment_name,
-                "api_version": self.api_version
-            }
-            
-            self.llm = AzureOpenAI(**client_params)
-            print(f"Azure OpenAI initialized successfully. Model name: {self.deployment_name}")
-        except Exception as e:
-            print(f"Error initializing Azure OpenAI: {e}")
-            self.llm = None
-        
-        if not self.api_key or not self.endpoint:
-            print("--------------------------------")
-            print("self.api_key: ", self.api_key)
-            print("self.endpoint: ", self.endpoint)
-            print("Warning: Azure OpenAI API key or endpoint not provided")
-            print("--------------------------------")
-        else:
-            print("--------------------------------")
-            print("Azure OpenAI configuration is valid")
-            print("API key length:", len(self.api_key) if self.api_key else 0)
-            print("Endpoint:", self.endpoint)
-            print("--------------------------------")
-    
-
+        # Set provider and model info for logging
+        self.provider = self.config.get("provider", "azure_openai")
+        # Get model info from LLM tool
+        llm_info = self.llm_tool.get_model_info()
+        self.model = llm_info.get("model_name", "gpt-4o-mini")
     
     async def execute(self, parameters: Dict[str, Any]) -> ToolResult:
         """
-        Execute text generation/composition with given parameters.
+        Execute LLM composition task.
         
         Args:
-            parameters: Generation parameters including:
-                - operation: Type of operation (summarize, compose_report, analyze, generate)
-                - content: Input content for processing
-                - prompt: Custom prompt (optional)
-                - format: Output format (markdown, html, json, text)
-                - style: Writing style (formal, casual, technical, creative)
-                - length: Target length (short, medium, long)
-                
-        Returns:
-            ToolResult with generated content
-        """
-        operation = parameters.get("operation", "generate")
-        content = parameters.get("content", "")
-        prompt = parameters.get("prompt", "")
-        output_format = parameters.get("format", "text")
-        style = parameters.get("style", "formal")
-        length = parameters.get("length", "medium")
+            parameters: Composition parameters including:
+                - task: Type of task ("summarize", "analyze", "compose", "combine")
+                - content: Text content to process (str or list of str)
+                - query: User query/instructions for the task
+                - format: Output format ("text", "json", "markdown")
+                - max_length: Maximum output length
+                - include_sources: Include source references (for combine task)
         
-        await self.logger.info(
-            f"Starting text composition",
-            tool_id=self.tool_id,
-            operation=operation,
-            format=output_format,
-            style=style
+        Returns:
+            ToolResult with composed content
+        """
+        task = parameters.get("task", "summarize")
+        content = parameters.get("content", "")
+        query = parameters.get("query", "")
+        output_format = parameters.get("format", "text")
+        max_length = parameters.get("max_length", self.max_tokens)
+        include_sources = parameters.get("include_sources", True)
+        
+        if not content:
+            return ToolResult(
+                tool_id=self.tool_id,
+                success=False,
+                result=None,
+                errors=["No content provided for composition"]
+            )
+        
+        await self._log_info(
+            f"Starting LLM composition task",
+            task=task,
+            content_length=len(str(content)),
+            provider=self.provider,
+            model=self.model
         )
         
         try:
-            # Generate content
-            result_content = await self._generate_content(
-                operation=operation,
-                content=content,
-                prompt=prompt,
-                format=output_format,
-                style=style,
-                length=length
-            )
+            # Prepare content for processing
+            processed_content = self._prepare_content(content, task)
+            
+            # Generate prompt based on task
+            prompt = self._generate_prompt(task, processed_content, query, output_format, include_sources)
+            
+            # Check token limits
+            if len(prompt) > self.max_input_tokens * 4:  # Rough estimate (4 chars per token)
+                prompt = prompt[:self.max_input_tokens * 4]
+                await self._log_warning("Content truncated due to token limits")
+            
+            # Call actual LLM using LLM tool
+            response = await self._call_llm(prompt, max_length, task, query)
+            
+            # Post-process response
+            final_result = self._post_process_response(response, output_format)
             
             return ToolResult(
                 tool_id=self.tool_id,
                 success=True,
-                result=result_content,
+                result=final_result,
                 metadata={
-                    "operation": operation,
-                    "format": output_format,
-                    "style": style,
-                    "length": length,
-                    "input_length": len(content),
-                    "output_length": len(result_content)
+                    "task": task,
+                    "provider": self.provider,
+                    "model": self.model,
+                    "input_length": len(processed_content),
+                    "output_length": len(final_result),
+                    "format": output_format
                 }
             )
             
         except Exception as e:
-            await self.logger.error(
-                f"Text composition failed",
-                tool_id=self.tool_id,
-                operation=operation,
-                error=str(e),
-                error_type=type(e).__name__,
-                traceback=str(e.__traceback__) if hasattr(e, '__traceback__') else None
-            )
+            await self._log_error(f"LLM composition failed", task=task, error=str(e))
             
             return ToolResult(
                 tool_id=self.tool_id,
                 success=False,
                 result=None,
-                metadata={
-                    "operation": operation, 
-                    "format": output_format,
-                    "error_type": type(e).__name__
-                },
                 errors=[str(e)]
             )
     
-    async def _generate_content(
+    def _prepare_content(self, content: Union[str, List[str], List[Dict]], task: str) -> str:
+        """Prepare content for LLM processing."""
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            if not content:
+                return ""
+            
+            # Handle list of strings
+            if isinstance(content[0], str):
+                return "\n\n---\n\n".join(content)
+            
+            # Handle list of dictionaries (e.g., web page results)
+            elif isinstance(content[0], dict):
+                formatted_content = []
+                for i, item in enumerate(content, 1):
+                    title = item.get('title', f'Source {i}')
+                    url = item.get('url', '')
+                    text_content = item.get('content', '') or item.get('summary', '')
+                    
+                    source_text = f"## Source {i}: {title}\n"
+                    if url:
+                        source_text += f"URL: {url}\n"
+                    source_text += f"\n{text_content}\n"
+                    
+                    formatted_content.append(source_text)
+                
+                return "\n\n---\n\n".join(formatted_content)
+        
+        return str(content)
+    
+    def _generate_prompt(
         self,
-        operation: str,
+        task: str,
         content: str,
-        prompt: str = "",
-        format: str = "text",
-        style: str = "formal",
-        length: str = "medium"
+        query: str,
+        output_format: str,
+        include_sources: bool
     ) -> str:
-        """
-        Generate content using Azure OpenAI.
+        """Generate appropriate prompt based on task type."""
+        base_prompts = {
+            "summarize": "Please provide a comprehensive summary of the following content:",
+            "analyze": "Please analyze the following content and provide key insights:",
+            "compose": "Please compose a well-structured response based on the following content:",
+            "combine": "Please combine and synthesize the following sources into a coherent analysis:"
+        }
         
-        Args:
-            operation: Type of operation
-            content: Input content
-            prompt: Custom prompt
-            format: Output format
-            style: Writing style
-            length: Target length
-            
-        Returns:
-            Generated content
-        """
-        # Debug logging for configuration
-        await self.logger.info(
-            f"Starting content generation",
-            tool_id=self.tool_id,
-            operation=operation,
-            has_api_key=bool(self.api_key),
-            has_endpoint=bool(self.endpoint),
-            has_llm=bool(self.llm),
-            deployment_name=self.deployment_name,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature
-        )
+        prompt = base_prompts.get(task, base_prompts["summarize"])
         
-        # Additional debug output
-        print(f"DEBUG: api_key exists: {bool(self.api_key)}")
-        print(f"DEBUG: endpoint exists: {bool(self.endpoint)}")
-        print(f"DEBUG: llm exists: {bool(self.llm)}")
-        print(f"DEBUG: api_key length: {len(self.api_key) if self.api_key else 0}")
-        print(f"DEBUG: endpoint: {self.endpoint}")
+        if query:
+            prompt += f"\n\nSpecific focus: {query}"
         
-        if not self.api_key or not self.endpoint:
-            await self.logger.error(
-                f"Missing Azure OpenAI configuration",
-                tool_id=self.tool_id,
-                has_api_key=bool(self.api_key),
-                has_endpoint=bool(self.endpoint),
-                api_key_length=len(self.api_key) if self.api_key else 0,
-                endpoint_value=self.endpoint
-            )
-            raise Exception("Azure OpenAI API key or endpoint not provided")
+        # Add format instructions
+        if output_format == "json":
+            prompt += "\n\nPlease format your response as valid JSON with appropriate fields."
+        elif output_format == "markdown":
+            prompt += "\n\nPlease format your response in Markdown with proper headings and structure."
         
-        if not self.llm:
-            await self.logger.error(
-                f"Azure OpenAI client not initialized",
-                tool_id=self.tool_id
-            )
-            raise Exception("Azure OpenAI client not initialized")
+        if include_sources and task == "combine":
+            prompt += "\n\nPlease include references to the sources in your response."
         
-        # Build the prompt
-        if prompt:
-            system_prompt = prompt
-        else:
-            system_prompt = self.prompt_templates.get(operation, self.prompt_templates["generate"])
+        prompt += f"\n\nContent to process:\n\n{content}"
         
-        # Add format and style instructions
-        system_prompt += f"\n\nOutput Format: {format}\nWriting Style: {style}\nLength: {length}"
-        
-        # Prepare the request for Azure OpenAI
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": content}
-        ]
-        
-        await self.logger.info(
-            f"Making Azure OpenAI request",
-            tool_id=self.tool_id,
-            deployment_name=self.deployment_name,
-            messages_count=len(messages),
-            max_tokens=self.max_tokens,
-            temperature=self.temperature
-        )
-        
+        return prompt
+    
+    async def _call_llm(self, prompt: str, max_tokens: int, task: str, query: str) -> str:
+        """Call actual LLM using LLM tool."""
         try:
-            # Use the Azure OpenAI client directly
-            response = self.llm.chat.completions.create(
-                model=self.deployment_name,
-                messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature
-            )
+            # Determine operation type based on task
+            operation_type = "completion"
+            if task == "summarize":
+                operation_type = "summarize"
             
-            generated_text = response.choices[0].message.content
+            # Call LLM tool
+            result = await self.llm_tool.execute({
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": self.temperature,
+                "operation_type": operation_type
+            })
             
-            await self.logger.info(
-                f"Azure OpenAI request successful",
-                tool_id=self.tool_id,
-                response_length=len(generated_text),
-                usage_tokens=response.usage.total_tokens if response.usage else None
-            )
-            
-            return self._format_output(generated_text, format)
-        
+            if result.success:
+                return result.result
+            else:
+                raise Exception(f"LLM call failed: {result.errors}")
+                
         except Exception as e:
-            await self.logger.error(
-                f"Azure OpenAI API failed",
-                tool_id=self.tool_id,
-                error=str(e),
-                error_type=type(e).__name__
-            )
-            raise Exception(f"Azure OpenAI API error: {str(e)}")
+            await self._log_error(f"LLM call failed: {str(e)}")
+            raise Exception(f"Failed to call LLM: {str(e)}")
     
-    def _format_output(self, content: str, format: str) -> str:
-        """Format output according to specified format."""
-        if format == "markdown":
-            return content
-        elif format == "html":
-            return f"<div>{content}</div>"
-        elif format == "json":
-            return json.dumps({"content": content, "timestamp": datetime.now().isoformat()})
-        else:
-            return content
+    def _post_process_response(self, response: str, output_format: str) -> str:
+        """Post-process LLM response based on format requirements."""
+        if output_format == "json":
+            try:
+                # Wrap response in JSON format
+                return json.dumps({
+                    "content": response,
+                    "format": "markdown",
+                    "generated_at": datetime.now().isoformat(),
+                    "word_count": len(response.split())
+                }, indent=2)
+            except:
+                return json.dumps({"content": response}, indent=2)
+        
+        return response
     
- 
-    def _get_summarize_prompt(self) -> str:
-        """Get summarization prompt template."""
-        return """You are a professional summarizer. Create a concise, accurate summary of the provided content. Focus on the main points and key insights. Maintain the original meaning while making it more accessible."""
-    
-    def _get_compose_report_prompt(self) -> str:
-        """Get report composition prompt template."""
-        return """You are a professional report writer. Create a comprehensive, well-structured report based on the provided information. Include an executive summary, key findings, analysis, and conclusions. Use clear, professional language."""
-    
-    def _get_analyze_prompt(self) -> str:
-        """Get analysis prompt template."""
-        return """You are a content analyst. Analyze the provided content and provide insights about its structure, themes, sentiment, and key points. Be objective and thorough in your analysis."""
-    
-    def _get_generate_prompt(self) -> str:
-        """Get general generation prompt template."""
-        return """You are a professional content creator. Generate high-quality, relevant content based on the provided input. Be creative, informative, and engaging while maintaining accuracy and relevance."""
+    def get_provider_status(self) -> Dict[str, Any]:
+        """Get status of available LLM providers."""
+        llm_info = self.llm_tool.get_model_info()
+        return {
+            "current_provider": "azure_openai",
+            "current_model": llm_info.get("model_name", "gpt-4o-mini"),
+            "deployment_name": llm_info.get("deployment_name"),
+            "endpoint": llm_info.get("endpoint"),
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "llm_tool_status": "active"
+        }
     
     def get_supported_operations(self) -> List[str]:
         """Get supported operation types."""
-        return ["summarize", "compose_report", "analyze", "generate", "text_generation"]
+        return ["summarize", "analyze", "compose", "combine", "generate_text"]
     
     async def cleanup(self):
         """Clean up resources."""
-        if self.session and not self.session.closed:
-            await self.session.close()
-        await super().cleanup() 
+        if hasattr(self, 'llm_tool'):
+            await self.llm_tool.cleanup()
+    
+    # Logging helpers
+    async def _log_info(self, message: str, **kwargs):
+        """Log info message."""
+        if hasattr(self, 'logger'):
+            await self.logger.info(message, tool_id=self.tool_id, **kwargs)
+        else:
+            print(f"[INFO] {message} | {kwargs}")
+    
+    async def _log_warning(self, message: str, **kwargs):
+        """Log warning message."""
+        if hasattr(self, 'logger'):
+            await self.logger.warning(message, tool_id=self.tool_id, **kwargs)
+        else:
+            print(f"[WARNING] {message} | {kwargs}")
+    
+    async def _log_error(self, message: str, **kwargs):
+        """Log error message."""
+        if hasattr(self, 'logger'):
+            await self.logger.error(message, tool_id=self.tool_id, **kwargs)
+        else:
+            print(f"[ERROR] {message} | {kwargs}")

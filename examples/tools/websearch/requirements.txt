@@ -1,0 +1,13 @@
+# Core dependencies
+aiohttp>=3.8.0
+
+# Selenium for browser-based search (optional but recommended)
+selenium>=4.0.0
+webdriver-manager>=3.8.0
+
+# googlesearch-python library (optional)
+googlesearch-python>=1.2.0
+
+# Additional useful packages
+urllib3>=1.26.0
+requests>=2.28.0

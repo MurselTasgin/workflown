@@ -11,7 +11,25 @@ from enum import Enum
 from typing import Dict, List, Any, Optional, Union
 import uuid
 
-from workflown.core.logging.logger import get_logger
+# Mock logger for testing
+class MockLogger:
+    def __init__(self, name):
+        self.name = name
+    
+    async def info(self, message, **kwargs):
+        print(f"[INFO] {self.name}: {message}")
+    
+    async def warning(self, message, **kwargs):
+        print(f"[WARNING] {self.name}: {message}")
+    
+    async def error(self, message, **kwargs):
+        print(f"[ERROR] {self.name}: {message}")
+    
+    async def debug(self, message, **kwargs):
+        print(f"[DEBUG] {self.name}: {message}")
+
+def get_logger(name):
+    return MockLogger(name)
 
 
 class ToolCapability(Enum):
