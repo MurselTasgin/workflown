@@ -29,6 +29,11 @@ from .core.planning.base_planner import BasePlanner, PlanningResult, TaskPlan
 # Storage system
 from .core.storage.base_storage import BaseStorage
 
+# Tools system
+from .core.tools.base_tool import BaseTool, ToolResult, ToolCapability
+from .core.tools.tool_registry import ToolRegistry
+from .core.tools.tool_mapper import ToolMapper, TaskMapping, MappingStrategy
+
 # Logging
 from .core.logging.logger import get_logger
 
@@ -71,6 +76,15 @@ __all__ = [
     
     # Storage system
     "BaseStorage",
+    
+    # Tools system
+    "BaseTool",
+    "ToolResult",
+    "ToolCapability",
+    "ToolRegistry",
+    "ToolMapper",
+    "TaskMapping",
+    "MappingStrategy",
     
     # Logging
     "get_logger",

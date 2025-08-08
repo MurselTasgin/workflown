@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Workflown Framework Search-Scrape-Summarize Workflow
+Workflown Framework Web Research Workflow Example
 
 Demonstrates proper use of the Workflown framework capabilities:
 - BaseWorkflow for orchestration
@@ -8,6 +8,14 @@ Demonstrates proper use of the Workflown framework capabilities:
 - Component factory for tool creation
 - Configuration management
 - Event system for progress tracking
+- Generic tool registry and mapping
+- Tool definitions with automatic metadata extraction
+- Web search, webpage scraping, and content composition workflow
+
+This workflow performs:
+1. Web Search: Searches for URLs based on the query
+2. Web Scraping: Scrapes content from URLs found in step 1
+3. Content Composition: Composes and summarizes the scraped content
 
 Usage:
     python examples/test_workflown_workflow.py [query]
@@ -26,8 +34,6 @@ from collections import defaultdict, deque
 
 # Add workflown to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, str(Path(__file__).parent / "tools"))
-sys.path.insert(0, str(Path(__file__).parent / "tools" / "websearch"))
 
 from workflown.core.workflows.base_workflow import BaseWorkflow, WorkflowResult, WorkflowState
 from workflown.core.workflows.task import Task, TaskPriority, TaskState, TaskDependency, DependencyType
@@ -35,10 +41,15 @@ from workflown.core.config.component_factory import ComponentFactory, ComponentR
 from workflown.core.events.event_bus import EventBus, Event, EventPriority
 from workflown.core.config.central_config import get_config
 
-# Import tool registry and mapper
-from tools.tool_registry import ToolRegistry
-from tools.simple_tool_mapper import SimpleToolMapper, TaskMapping, MappingStrategy
-from tools.base_tool import ToolCapability
+# Import tool registry and mapper from workflown
+from workflown.core.tools.tool_registry import ToolRegistry
+from workflown.core.tools.tool_mapper import ToolMapper, TaskMapping, MappingStrategy
+from workflown.core.tools.base_tool import BaseTool, ToolResult, ToolCapability
+
+# Import toolbox tools
+from toolbox.web_search_tool import WebSearchTool
+from toolbox.webpage_parser import WebPageParserTool
+from toolbox.composer_tool import ComposerTool
 
 
 class WorkflowExecutionEngine:
@@ -49,6 +60,7 @@ class WorkflowExecutionEngine:
     - Result passing between tasks
     - Event-driven progress tracking
     - Intelligent tool mapping using enhanced registry
+    - Real-time result display
     """
     
     def __init__(self, event_bus: EventBus, component_factory: ComponentFactory, tool_registry: ToolRegistry):
@@ -64,21 +76,46 @@ class WorkflowExecutionEngine:
         # Task-to-tool mappings
         self.task_mappings: Dict[str, TaskMapping] = {}
         
+        # Real-time display callback
+        self.result_display_callback = None
+        
+        # Progress tracking
+        self.total_tasks = 0
+        self.current_step = 0
+        
         # Configuration for result passing between tasks
-        self.result_passing_config = {
-            "web_scraping": {
-                "input_from": "search_task",
-                "input_field": "urls",
-                "result_path": "result",
-                "transform": lambda results: [item.get("url", "") for item in results[:3]]
-            },
-            "text_generation": {
-                "input_from": "scrape_task", 
-                "input_field": "content",
-                "result_path": "result",
-                "transform": lambda results: [item for item in results if not item.get('metadata', {}).get('error') and len(item.get('content', '')) > 100]
-            }
-        }
+        self.result_passing_config = {}
+    
+    def set_result_display_callback(self, callback):
+        """Set callback function for real-time result display."""
+        self.result_display_callback = callback
+    
+    def _display_task_result(self, task_id: str, task_type: str, result: Any):
+        """Display task result via external callback if set (no default printing)."""
+        if self.result_display_callback:
+            self.result_display_callback(task_id, task_type, result)
+    
+    def _extract_urls_from_search_results(self, search_results: List[Dict[str, Any]]) -> List[str]:
+        """Extract URLs from web search results."""
+        urls = []
+        
+        for result in search_results:
+            # Handle different result formats
+            if isinstance(result, dict):
+                # Check for URL in various possible fields
+                url = result.get('url') or result.get('link') or result.get('href')
+                if url:
+                    urls.append(url)
+            elif hasattr(result, 'url'):
+                urls.append(result.url)
+        
+        # If no URLs found, provide a fallback
+        if not urls:
+            urls = ["https://example.com"]
+        
+        return urls
+    
+    # Removed: Composition input preparation should be handled inside ComposerTool
         
     async def execute_workflow(self, tasks: Dict[str, Task]) -> Dict[str, Any]:
         """
@@ -90,7 +127,11 @@ class WorkflowExecutionEngine:
         Returns:
             Dictionary containing all task results
         """
-        print(f"🚀 Starting generic workflow execution with {len(tasks)} tasks")
+        self.total_tasks = len(tasks)
+        self.current_step = 0
+        
+        print(f"🚀 Starting workflow execution with {self.total_tasks} tasks")
+        print(f"📊 Progress: 0/{self.total_tasks} tasks completed")
         
         # Initialize task states
         for task in tasks.values():
@@ -151,11 +192,14 @@ class WorkflowExecutionEngine:
         await self.event_bus.publish(Event(
             event_type="task.started",
             source="workflow_engine",
-            data={"task_id": task_id},
+            data={"task_id": task_id, "task_type": task.task_type},
             timestamp=datetime.now()
         ))
         
         try:
+            # Update progress
+            self.current_step += 1
+            
             # Prepare task parameters with results from previous tasks
             parameters = self._prepare_task_parameters(task)
             
@@ -169,6 +213,17 @@ class WorkflowExecutionEngine:
             
             task.complete(result, {"execution_engine": "generic"})
             
+            # Display result immediately
+            self._display_task_result(task_id, task.task_type, result)
+            
+            # Show progress update
+            print(f"📊 Progress: {self.current_step}/{self.total_tasks} tasks completed")
+            
+            # Show next steps if available
+            if self.current_step < self.total_tasks:
+                remaining_tasks = self.total_tasks - self.current_step
+                print(f"⏭️  Next: {remaining_tasks} task(s) remaining")
+            
             await self.event_bus.publish(Event(
                 event_type="task.completed",
                 source="workflow_engine",
@@ -178,8 +233,6 @@ class WorkflowExecutionEngine:
                 },
                 timestamp=datetime.now()
             ))
-            
-            print(f"✅ Task completed: {task_id}")
             
         except Exception as e:
             # Mark task as failed
@@ -214,7 +267,7 @@ class WorkflowExecutionEngine:
         source_task_id = config["input_from"]
         source_results = self.task_results.get(source_task_id)
         
-        if source_results:
+        if source_results is not None:  # Changed from 'if source_results:' to handle empty lists
             # Apply transformation if specified
             transform_func = config.get("transform")
             if transform_func:
@@ -238,7 +291,7 @@ class WorkflowExecutionEngine:
         # Get or create task mapping
         if task.task_id not in self.task_mappings:
             # Create tool mapper
-            tool_mapper = SimpleToolMapper(self.tool_registry)
+            tool_mapper = ToolMapper(self.tool_registry)
             
             print(f"🔧 Using registry instance: {id(self.tool_registry)}")
             print(f"🔧 Registry has {len(self.tool_registry._tool_classes)} tool classes")
@@ -270,14 +323,28 @@ class WorkflowExecutionEngine:
             raise Exception(f"Failed to create tool instance for task {task.task_id}")
         
         try:
-            # Execute the tool
-            result = await tool_instance.execute(parameters)
-            
+            # Execute the tool with tracking (enables input/output persistence)
+            result = await tool_instance.execute_with_tracking(
+                parameters,
+                context={"task_id": task.task_id, "task_type": task.task_type}
+            )
+
+            # Display result using tool-specific renderer
+            try:
+                tool_instance.display_result(
+                    task_id=task.task_id,
+                    result=result.result,
+                    context={"task_type": task.task_type}
+                )
+            except Exception as _e:
+                # Non-fatal: continue even if display fails
+                pass
+
             if not result.success:
                 raise Exception(f"Tool execution failed: {result.errors}")
-            
+
             return result.result
-            
+
         finally:
             # Cleanup tool instance
             await tool_instance.cleanup()
@@ -298,9 +365,9 @@ class WorkflowExecutionEngine:
         }
 
 
-class SearchScrapeSummarizeWorkflow(BaseWorkflow):
+class GenericWorkflowExample(BaseWorkflow):
     """
-    Search-Scrape-Summarize workflow using Workflown framework.
+    Web research workflow example using Workflown framework.
     
     This workflow demonstrates proper use of:
     - Task orchestration with dependencies
@@ -308,6 +375,13 @@ class SearchScrapeSummarizeWorkflow(BaseWorkflow):
     - Event-driven progress tracking
     - Configuration management
     - Error handling and recovery
+    - Generic tool registry and mapping
+    - Web search, webpage scraping, and content composition
+    
+    Workflow Steps:
+    1. Web Search: Searches for URLs based on the query
+    2. Web Scraping: Scrapes content from URLs found in step 1
+    3. Content Composition: Composes and summarizes the scraped content
     """
     
     def __init__(self, workflow_id: str = None, config: Dict[str, Any] = None):
@@ -319,9 +393,9 @@ class SearchScrapeSummarizeWorkflow(BaseWorkflow):
         self.component_factory = ComponentFactory(self.component_registry)
         
         # Workflow configuration
-        self.query = self.config.get("query", "Agentic AI frameworks in 2025")
-        self.max_urls = self.config.get("max_urls", 5)
-        self.scrape_limit = self.config.get("scrape_limit", 3)
+        self.query = self.config.get("query", "Example workflow query")
+        self.max_tasks = self.config.get("max_tasks", 3)
+        self.task_types = self.config.get("task_types", ["web_search", "webpage_parse", "compose"])
         
         # Task tracking
         self.tasks = {}
@@ -332,7 +406,9 @@ class SearchScrapeSummarizeWorkflow(BaseWorkflow):
         
         # Initialize and populate tool registry
         self.tool_registry = ToolRegistry()
-        self._register_tools()
+        
+        # Tools will be registered externally (e.g., in main) to allow per-run configuration like persistence
+        # self._register_tools(tool_list=[WebSearchTool, WebPageParserTool, ComposerTool])
         
         print(f"🔧 Workflow using registry instance: {id(self.tool_registry)}")
         
@@ -344,91 +420,42 @@ class SearchScrapeSummarizeWorkflow(BaseWorkflow):
         
         def on_task_started(event: Event):
             task_id = event.data.get("task_id")
-            print(f"📝 Task started: {task_id}")
+            task_type = event.data.get("task_type", "unknown")
+            print(f"\n🚀 Starting task: {task_id} ({task_type})")
+            print(f"   ⏱️  {datetime.now().strftime('%H:%M:%S')}")
         
         def on_task_completed(event: Event):
             task_id = event.data.get("task_id")
-            print(f"✅ Task completed: {task_id}")
+            result_size = event.data.get("result_size", 0)
+            print(f"✅ Task completed: {task_id} (result size: {result_size} chars)")
+            print(f"   ⏱️  {datetime.now().strftime('%H:%M:%S')}")
         
         def on_task_failed(event: Event):
             task_id = event.data.get("task_id")
             error = event.data.get("error", "Unknown error")
             print(f"❌ Task failed: {task_id} - {error}")
+            print(f"   ⏱️  {datetime.now().strftime('%H:%M:%S')}")
         
         # Register event listeners
         self.event_bus.subscribe("task.started", on_task_started)
         self.event_bus.subscribe("task.completed", on_task_completed)
         self.event_bus.subscribe("task.failed", on_task_failed)
     
-    def _register_tools(self):
-        """Register tools with metadata in the tool registry."""
-        from tools.websearch.googlesearch_python_search import GoogleSearchPythonTool
-        from tools.webpage_parser import WebPageParserTool
-        from tools.composer_tool import ComposerTool
+    def _register_tools(self, tool_list: Optional[List[Any]] = None):
+        """Register tools with automatic metadata extraction."""
+        tool_list = tool_list or [WebSearchTool, WebPageParserTool, ComposerTool]
+        for tool in tool_list:
+            tool_id = tool.__name__
+            self.tool_registry.register_tool_class(
+                tool_class=tool,
+                config={"default_config": "value1"}
+            )
+            print(f"✅ Registered {tool.__name__} with ID: {tool_id}")
+
         
-        # Register Google Search Python Tool
-        google_search_metadata = {
-            "name": "Google Search Python",
-            "description": "Performs web searches using googlesearch-python library",
-            "task_types": ["web_search", "search", "url_discovery"],
-            "capabilities": [ToolCapability.WEB_SEARCH, ToolCapability.HTTP_REQUESTS],
-            "keywords": ["google", "search", "web", "urls", "results", "query"]
-        }
-        
-        self.tool_registry.register_tool_with_metadata(
-            tool_class=GoogleSearchPythonTool,
-            metadata=google_search_metadata,
-            config={
-                "pause_between_requests": 2.0,
-                "safe": "off",
-                "max_retries": 2
-            }
-        )
-        
-        # Register Web Page Parser Tool
-        webpage_parser_metadata = {
-            "name": "Web Page Parser",
-            "description": "Scrapes and parses web pages to extract content",
-            "task_types": ["web_scraping", "content_extraction", "data_processing"],
-            "capabilities": [ToolCapability.HTTP_REQUESTS, ToolCapability.DATA_PROCESSING],
-            "keywords": ["webpage", "parser", "scraper", "content", "extraction"]
-        }
-        
-        self.tool_registry.register_tool_with_metadata(
-            tool_class=WebPageParserTool,
-            metadata=webpage_parser_metadata,
-            config={
-                "request_timeout": 15,
-                "max_content_length": 200000,
-                "rate_limit_delay": 1.5,
-                "max_retries": 2,
-                "min_content_length": 200
-            }
-        )
-        
-        # Register LLM Composer Tool
-        composer_metadata = {
-            "name": "LLM Composer",
-            "description": "Generates text content using Large Language Models",
-            "task_types": ["text_generation", "summarization", "content_creation"],
-            "capabilities": [ToolCapability.TEXT_GENERATION, ToolCapability.TEXT_SUMMARIZATION],
-            "keywords": ["llm", "generation", "text", "composer", "ai"]
-        }
-        
-        self.tool_registry.register_tool_with_metadata(
-            tool_class=ComposerTool,
-            metadata=composer_metadata,
-            config={
-                "provider": "azure_openai",
-                "max_tokens": 2000,
-                "temperature": 0.7
-            }
-        )
-        
-        # Print registration summary
+        # Show registration summary
         stats = self.tool_registry.get_statistics()
-        print(f"\n✅ Tool registration completed!")
-        print(f"📊 Registry Statistics:")
+        print(f"\n📊 Tool Registration Summary:")
         print(f"   • Total tools: {stats['total_tools']}")
         print(f"   • Categories: {stats['categories']}")
         print(f"   • Capabilities: {stats['capabilities']}")
@@ -438,6 +465,7 @@ class SearchScrapeSummarizeWorkflow(BaseWorkflow):
         tools = self.tool_registry.list_tools()
         for tool in tools:
             print(f"   • {tool['name']} - {tool['description'][:60]}...")
+            print(f"     Task types: {tool['task_types']}")
     
     def _register_components(self):
         """Register workflow components with the factory."""
@@ -446,7 +474,12 @@ class SearchScrapeSummarizeWorkflow(BaseWorkflow):
     
     async def execute(self, context: Dict[str, Any]) -> WorkflowResult:
         """
-        Execute the search-scrape-summarize workflow using the generic execution engine.
+        Execute the web research workflow using the generic execution engine.
+        
+        This workflow performs:
+        1. Web Search: Searches for URLs based on the query using WebSearchTool
+        2. Web Scraping: Scrapes content from URLs found in step 1 using WebPageParserTool
+        3. Content Composition: Composes and summarizes the scraped content using ComposerTool
         
         Args:
             context: Execution context with parameters
@@ -466,9 +499,12 @@ class SearchScrapeSummarizeWorkflow(BaseWorkflow):
             if context.get("query"):
                 self.query = context["query"]
             
-            print(f"🚀 Starting Workflown Search-Scrape-Summarize Workflow")
+            print(f"🚀 Starting Workflown Web Research Workflow")
             print(f"Query: '{self.query}'")
             print(f"Workflow ID: {self.workflow_id}")
+            print(f"Steps: Web Search → Web Scraping → Content Composition")
+            print("=" * 60)
+            print(f"📋 Real-time progress and results will be displayed below:")
             print("=" * 60)
             
             # Step 1: Create workflow tasks with dependencies
@@ -546,84 +582,70 @@ class SearchScrapeSummarizeWorkflow(BaseWorkflow):
     async def _create_workflow_tasks(self):
         """Create workflow tasks with proper dependencies."""
         
-        # Task 1: Web Search
-        search_task = Task(
-            task_id="search_task",
-            name="Web Search",
-            description=f"Search the web for: {self.query}",
-            task_type="web_search",
-            parameters={
-                "query": self.query,
-                "max_results": self.max_urls,
-                "language": "en",
-                "region": "US"
-            },
-            priority=TaskPriority.HIGH,
-            timeout=30.0
-        )
-        self.tasks["search_task"] = search_task
+        # Create specific web research tasks
+        for i, task_type in enumerate(self.task_types[:self.max_tasks]):
+            task_id = f"task_{i+1}"
+            
+            # Set parameters based on task type
+            if task_type == "web_search":
+                parameters = {
+                    "query": self.query,
+                    "max_results": 5,
+                    "engine": "duckduckgo"
+                }
+            elif task_type == "webpage_parse":
+                parameters = {
+                    "urls": [],  # Will be populated from web search results
+                    "strategy": "readability",
+                    "extract_links": False,
+                    "extract_images": False,
+                    "max_content_length": 5000
+                }
+            elif task_type == "compose":
+                parameters = {
+                    "task": "summarize",
+                    "content": "Sample content",  # Will be populated from scraping results
+                    "format": "text",
+                    "max_length": 2000,  # Increased from 1000 to 2000 for longer summaries
+                    "min_length": 1000,  # Added minimum length requirement
+                    "query": f"Provide a comprehensive summary of the following content about: {self.query}. Include key points, main themes, and important details. The summary should be detailed and informative."
+                }
+            else:
+                parameters = {
+                    "query": self.query,
+                    "task_index": i + 1,
+                    "max_results": 5
+                }
+            
+            task = Task(
+                task_id=task_id,
+                name=f"Task {i+1}",
+                description=f"Web research task: {task_type}",
+                task_type=task_type,
+                parameters=parameters,
+                priority=TaskPriority.NORMAL,
+                timeout=30.0
+            )
+            
+            # Add dependency if not the first task
+            if i > 0:
+                dependency = TaskDependency(
+                    dependency_id=f"task_{i}",
+                    dependency_type=DependencyType.SEQUENTIAL,
+                    required=True
+                )
+                task.add_dependency(dependency)
+            
+            self.tasks[task_id] = task
         
-        # Task 2: Web Scraping (depends on search)
-        scrape_task = Task(
-            task_id="scrape_task",
-            name="Web Scraping",
-            description="Scrape content from search result URLs",
-            task_type="web_scraping",
-            parameters={
-                "urls": [],  # Will be populated from search results
-                "extract_links": False,
-                "extract_images": False,
-                "strategy": "auto"
-            },
-            priority=TaskPriority.NORMAL,
-            timeout=60.0
-        )
-        
-        # Add dependency: scraping depends on search completion
-        scrape_dependency = TaskDependency(
-            dependency_id="search_task",
-            dependency_type=DependencyType.SEQUENTIAL,
-            required=True
-        )
-        scrape_task.add_dependency(scrape_dependency)
-        self.tasks["scrape_task"] = scrape_task
-        
-        # Task 3: Content Summarization (depends on scraping)
-        summarize_task = Task(
-            task_id="summarize_task",
-            name="Content Summarization",
-            description="Generate summary using LLM",
-            task_type="text_generation",
-            parameters={
-                "task": "combine",
-                "content": [],  # Will be populated from scraping results
-                "query": self.query,
-                "format": "text",
-                "include_sources": True
-            },
-            priority=TaskPriority.CRITICAL,
-            timeout=45.0
-        )
-        
-        # Add dependency: summarization depends on scraping completion
-        summarize_dependency = TaskDependency(
-            dependency_id="scrape_task",
-            dependency_type=DependencyType.SEQUENTIAL,
-            required=True
-        )
-        summarize_task.add_dependency(summarize_dependency)
-        self.tasks["summarize_task"] = summarize_task
-        
-        print(f"📋 Created {len(self.tasks)} workflow tasks with dependencies")
+        print(f"📋 Created {len(self.tasks)} web research tasks with dependencies")
     
     async def _collect_final_results(self, task_results: Dict[str, Any]) -> Dict[str, Any]:
         """Collect and structure final workflow results."""
         
         return {
             "query": self.query,
-            "search_results": task_results.get("search_task", []),
-            "scraped_content": task_results.get("scrape_task", []),
-            "final_summary": task_results.get("summarize_task", ""),
+            "task_results": task_results,
             "workflow_metadata": {
                 "workflow_id": self.workflow_id,
                 "execution_timestamps": {
@@ -682,298 +704,9 @@ class SearchScrapeSummarizeWorkflow(BaseWorkflow):
             return True
         return False
 
-
-class DataAnalysisWorkflow(BaseWorkflow):
-    """
-    Example of a different workflow type using the same generic execution engine.
-    
-    This demonstrates how the WorkflowExecutionEngine can be reused for different
-    workflow types with different task configurations.
-    """
-    
-    def __init__(self, workflow_id: str = None, config: Dict[str, Any] = None):
-        super().__init__(workflow_id, config)
-        
-        # Initialize framework components
-        self.event_bus = EventBus()
-        self.component_registry = ComponentRegistry()
-        self.component_factory = ComponentFactory(self.component_registry)
-        
-        # Workflow configuration
-        self.dataset_path = self.config.get("dataset_path", "sample_data.csv")
-        self.analysis_type = self.config.get("analysis_type", "trend_analysis")
-        
-        # Task tracking
-        self.tasks = {}
-        self.results = {}
-        
-        # Setup event listeners
-        self._setup_event_listeners()
-        
-        # Register components
-        self._register_components()
-        
-        # Create execution engine with custom result passing config
-        self.execution_engine = WorkflowExecutionEngine(self.event_bus, self.component_factory)
-        self._setup_custom_result_passing()
-    
-    def _setup_event_listeners(self):
-        """Setup event listeners for workflow monitoring."""
-        
-        def on_task_started(event: Event):
-            task_id = event.data.get("task_id")
-            print(f"📊 Data analysis task started: {task_id}")
-        
-        def on_task_completed(event: Event):
-            task_id = event.data.get("task_id")
-            print(f"✅ Data analysis task completed: {task_id}")
-        
-        def on_task_failed(event: Event):
-            task_id = event.data.get("task_id")
-            error = event.data.get("error", "Unknown error")
-            print(f"❌ Data analysis task failed: {task_id} - {error}")
-        
-        # Register event listeners
-        self.event_bus.subscribe("task.started", on_task_started)
-        self.event_bus.subscribe("task.completed", on_task_completed)
-        self.event_bus.subscribe("task.failed", on_task_failed)
-    
-    def _register_components(self):
-        """Register data analysis components."""
-        # This would register data analysis tools
-        # For now, we'll use the same tools but with different configurations
-        pass
-    
-    def _setup_custom_result_passing(self):
-        """Setup custom result passing configuration for data analysis workflow."""
-        # Example: Configure how data flows between analysis steps
-        self.execution_engine.add_result_passing_config(
-            "data_processing",
-            {
-                "input_from": "data_collection",
-                "input_field": "raw_data",
-                "result_path": "result",
-                "transform": lambda results: results.get("data", [])
-            }
-        )
-        
-        self.execution_engine.add_result_passing_config(
-            "data_visualization",
-            {
-                "input_from": "data_processing",
-                "input_field": "processed_data",
-                "result_path": "result",
-                "transform": lambda results: results.get("processed_data", [])
-            }
-        )
-    
-    async def execute(self, context: Dict[str, Any]) -> WorkflowResult:
-        """Execute the data analysis workflow."""
-        execution_start = time.time()
-        self.state = WorkflowState.RUNNING
-        self.started_at = datetime.now()
-        
-        # Start the event bus
-        await self.event_bus.start()
-        
-        try:
-            print(f"🚀 Starting Data Analysis Workflow")
-            print(f"Dataset: {self.dataset_path}")
-            print(f"Analysis Type: {self.analysis_type}")
-            print(f"Workflow ID: {self.workflow_id}")
-            print("=" * 60)
-            
-            # Create workflow tasks
-            await self._create_analysis_tasks()
-            
-            # Execute using generic engine
-            task_results = await self.execution_engine.execute_workflow(self.tasks)
-            
-            # Collect results
-            final_result = {
-                "dataset_path": self.dataset_path,
-                "analysis_type": self.analysis_type,
-                "task_results": task_results,
-                "execution_stats": self.execution_engine.get_execution_stats()
-            }
-            
-            # Success
-            execution_time = time.time() - execution_start
-            self.state = WorkflowState.COMPLETED
-            self.completed_at = datetime.now()
-            
-            await self.event_bus.publish(Event(
-                event_type="workflow.completed",
-                source="data_analysis_workflow",
-                data={
-                    "workflow_id": self.workflow_id,
-                    "execution_time": execution_time,
-                    "analysis_type": self.analysis_type
-                },
-                timestamp=datetime.now()
-            ))
-            
-            # Stop the event bus
-            await self.event_bus.stop()
-            
-            return WorkflowResult(
-                workflow_id=self.workflow_id,
-                success=True,
-                result=final_result,
-                metadata={
-                    "analysis_type": self.analysis_type,
-                    "execution_time": execution_time,
-                    "tasks_executed": len(self.tasks),
-                    "framework": "workflown"
-                },
-                execution_time=execution_time,
-                timestamp=self.completed_at
-            )
-            
-        except Exception as e:
-            # Failure handling
-            execution_time = time.time() - execution_start
-            self.state = WorkflowState.FAILED
-            self.completed_at = datetime.now()
-            
-            await self.event_bus.publish(Event(
-                event_type="workflow.failed",
-                source="data_analysis_workflow",
-                data={
-                    "workflow_id": self.workflow_id,
-                    "error": str(e),
-                    "execution_time": execution_time
-                },
-                timestamp=datetime.now()
-            ))
-            
-            await self.event_bus.stop()
-            
-            return WorkflowResult(
-                workflow_id=self.workflow_id,
-                success=False,
-                result=None,
-                metadata={"analysis_type": self.analysis_type, "execution_time": execution_time},
-                execution_time=execution_time,
-                timestamp=self.completed_at,
-                errors=[str(e)]
-            )
-    
-    async def _create_analysis_tasks(self):
-        """Create data analysis tasks with dependencies."""
-        
-        # Task 1: Data Collection
-        collection_task = Task(
-            task_id="data_collection",
-            name="Data Collection",
-            description=f"Collect data from {self.dataset_path}",
-            task_type="data_collection",
-            parameters={
-                "source": self.dataset_path,
-                "format": "csv"
-            },
-            priority=TaskPriority.HIGH,
-            timeout=30.0
-        )
-        self.tasks["data_collection"] = collection_task
-        
-        # Task 2: Data Processing (depends on collection)
-        processing_task = Task(
-            task_id="data_processing",
-            name="Data Processing",
-            description="Process and clean the collected data",
-            task_type="data_processing",
-            parameters={
-                "raw_data": [],  # Will be populated from collection results
-                "cleaning_rules": ["remove_duplicates", "handle_missing"]
-            },
-            priority=TaskPriority.NORMAL,
-            timeout=60.0
-        )
-        
-        # Add dependency
-        processing_dependency = TaskDependency(
-            dependency_id="data_collection",
-            dependency_type=DependencyType.SEQUENTIAL,
-            required=True
-        )
-        processing_task.add_dependency(processing_dependency)
-        self.tasks["data_processing"] = processing_task
-        
-        # Task 3: Data Visualization (depends on processing)
-        visualization_task = Task(
-            task_id="data_visualization",
-            name="Data Visualization",
-            description="Create visualizations from processed data",
-            task_type="data_visualization",
-            parameters={
-                "processed_data": [],  # Will be populated from processing results
-                "chart_types": ["line", "bar", "scatter"]
-            },
-            priority=TaskPriority.CRITICAL,
-            timeout=45.0
-        )
-        
-        # Add dependency
-        visualization_dependency = TaskDependency(
-            dependency_id="data_processing",
-            dependency_type=DependencyType.SEQUENTIAL,
-            required=True
-        )
-        visualization_task.add_dependency(visualization_dependency)
-        self.tasks["data_visualization"] = visualization_task
-        
-        print(f"📊 Created {len(self.tasks)} data analysis tasks with dependencies")
-    
-    async def pause(self) -> bool:
-        """Pause workflow execution."""
-        if self.state == WorkflowState.RUNNING:
-            self.state = WorkflowState.PAUSED
-            await self.event_bus.publish(Event(
-                event_type="workflow.paused",
-                source="data_analysis_workflow",
-                data={"workflow_id": self.workflow_id},
-                timestamp=datetime.now()
-            ))
-            return True
-        return False
-    
-    async def resume(self) -> bool:
-        """Resume paused workflow execution."""
-        if self.state == WorkflowState.PAUSED:
-            self.state = WorkflowState.RUNNING
-            await self.event_bus.publish(Event(
-                event_type="workflow.resumed",
-                source="data_analysis_workflow",
-                data={"workflow_id": self.workflow_id},
-                timestamp=datetime.now()
-            ))
-            return True
-        return False
-    
-    async def cancel(self) -> bool:
-        """Cancel workflow execution."""
-        if self.state in [WorkflowState.RUNNING, WorkflowState.PAUSED]:
-            self.state = WorkflowState.CANCELLED
-            self.completed_at = datetime.now()
-            
-            # Cancel all pending tasks
-            for task in self.tasks.values():
-                if task.state in [TaskState.PENDING, TaskState.RUNNING]:
-                    task.cancel("Workflow cancelled")
-            
-            await self.event_bus.publish(Event(
-                event_type="workflow.cancelled",
-                source="data_analysis_workflow",
-                data={"workflow_id": self.workflow_id},
-                timestamp=datetime.now()
-            ))
-            return True
-        return False
-
-
+ 
 async def main():
-    """Main function to run the Workflown-based workflow."""
+    """Main function to run the Workflown-based web research workflow."""
     
     # Get query from command line or use default
     if len(sys.argv) > 1:
@@ -981,60 +714,136 @@ async def main():
     else:
         query = "Agentic AI frameworks in 2025"
     
-    print(f"🚀 Workflown Framework Search-Scrape-Summarize Test")
+    print(f"🚀 Workflown Framework Web Research Workflow Example")
     print(f"Query: '{query}'")
+    print(f"Workflow Steps: Web Search → Web Scraping → Content Composition")
     print()
     
     try:
         # Create workflow with configuration
         workflow_config = {
             "query": query,
-            "max_urls": 5,
-            "scrape_limit": 3
+            "max_tasks": 3,
+            "task_types": ["web_search", "webpage_parse", "compose"]
         }
         
-        workflow = SearchScrapeSummarizeWorkflow(config=workflow_config)
+        # Initialize workflow ------------------------------------------------------------
+        workflow = GenericWorkflowExample(config=workflow_config)
+
+
+        # Register tools ------------------------------------------------------------------
+        tool1_id = workflow.tool_registry.register_tool_class(
+            tool_class=WebSearchTool,
+            config={"default_config": "value1",
+                    "persistence": {
+                        "enabled": True,
+                        "base_path": "logs/persistence",
+                        "inputs_subdir": "inputs",
+                        "outputs_subdir": "outputs",
+                        "persist_inputs": True,
+                        "persist_outputs": True
+                    }
+                    }
+        )
+        print(f"✅ Registered WebSearchTool with ID: {tool1_id}")
         
-        # Execute workflow
+        # Register TaskType2Tool
+        tool2_id = workflow.tool_registry.register_tool_class(
+            tool_class=WebPageParserTool,
+            config={"default_config": "value2",
+                    "persistence": {
+                        "enabled": True,
+                        "base_path": "logs/persistence",
+                        "inputs_subdir": "inputs",
+                        "outputs_subdir": "outputs",
+                        "persist_inputs": True,
+                        "persist_outputs": True
+                    }
+                    }
+        )
+        print(f"✅ Registered WebPageParserTool with ID: {tool2_id}")
+        
+        # Register TaskType3Tool
+        tool3_id = workflow.tool_registry.register_tool_class(
+            tool_class=ComposerTool,
+            config={"default_config": "value3",
+                    "persistence": {
+                        "enabled": True,
+                        "base_path": "logs/persistence",
+                        "inputs_subdir": "inputs",
+                        "outputs_subdir": "outputs",
+                        "persist_inputs": True,
+                        "persist_outputs": True
+                    }
+                    }
+        )
+        print(f"✅ Registered ComposerTool with ID: {tool3_id}")
+
+
+        # Set result passing config ------------------------------------------------------
+
+        workflow.execution_engine.result_passing_config = {
+            "web_search": {
+                "input_from": None,  # No input dependency
+                "input_field": "query",
+                "result_path": "result",
+                "transform": lambda results: results
+            },
+            "webpage_parse": {
+                "input_from": "task_1", 
+                "input_field": "urls",
+                "result_path": "result",
+                "transform": workflow.execution_engine._extract_urls_from_search_results
+            },
+            "compose": {
+                "input_from": "task_2",
+                "input_field": "content",
+                "result_path": "result",
+                # Let ComposerTool handle preparation/cleaning
+                "transform": lambda results: results
+            }
+        }
+
+
+        # Execute workflow --------------------------------------------------------------
         context = {"query": query}
         result = await workflow.execute(context)
         
-        # Display results
+        # Display final summary
         if result.success:
             print(f"\n{'=' * 60}")
             print(f"🎉 WORKFLOW COMPLETED SUCCESSFULLY")
             print(f"{'=' * 60}")
             
             # Display execution metrics
-            print(f"📊 Execution Metrics:")
+            print(f"📊 Final Execution Summary:")
             print(f"   • Workflow ID: {result.workflow_id}")
-            print(f"   • Execution Time: {result.execution_time:.2f} seconds")
+            print(f"   • Total Execution Time: {result.execution_time:.2f} seconds")
             print(f"   • Tasks Executed: {result.metadata.get('tasks_executed', 0)}")
             print(f"   • Framework: {result.metadata.get('framework', 'unknown')}")
             
-            # Display final summary
-            final_summary = result.result.get("final_summary", "")
-            if final_summary:
-                print(f"\n📋 FINAL SUMMARY:")
-                print(f"{'─' * 60}")
-                # Display first 800 characters
-                display_summary = final_summary[:800]
-                if len(final_summary) > 800:
-                    display_summary += "\\n\\n[Summary truncated for display...]"
-                print(display_summary)
-                print(f"{'─' * 60}")
+            # Show execution stats from engine
+            if hasattr(workflow, 'execution_engine'):
+                stats = workflow.execution_engine.get_execution_stats()
+                print(f"   • Success Rate: {stats.get('success_rate', 0):.1%}")
+                print(f"   • Tool Mappings: {stats.get('tool_mappings', 0)}")
             
             # Display workflow metadata
-            workflow_meta = result.result.get("workflow_metadata", {})
-            if workflow_meta:
-                print(f"\n🔧 Workflow Metadata:")
-                print(f"   • Component Registry: {workflow_meta.get('component_registry_size', 0)} components")
-                print(f"   • Framework Version: {workflow_meta.get('framework_version', 'unknown')}")
-                
-                timestamps = workflow_meta.get("execution_timestamps", {})
-                if timestamps.get("started") and timestamps.get("completed"):
-                    print(f"   • Started: {timestamps['started']}")
-                    print(f"   • Completed: {timestamps['completed']}")
+            if hasattr(result, 'result') and isinstance(result.result, dict):
+                workflow_meta = result.result.get("workflow_metadata", {})
+                if workflow_meta:
+                    print(f"\n🔧 Workflow Metadata:")
+                    print(f"   • Component Registry: {workflow_meta.get('component_registry_size', 0)} components")
+                    print(f"   • Framework Version: {workflow_meta.get('framework_version', 'unknown')}")
+                    
+                    timestamps = workflow_meta.get("execution_timestamps", {})
+                    if timestamps.get("started") and timestamps.get("completed"):
+                        print(f"   • Started: {timestamps['started']}")
+                        print(f"   • Completed: {timestamps['completed']}")
+            
+            print(f"\n✅ All tasks completed successfully!")
+            print(f"📋 Results were displayed in real-time during execution.")
+            print(f"{'=' * 60}")
         
         else:
             print(f"\n❌ WORKFLOW FAILED")
@@ -1043,10 +852,6 @@ async def main():
         
         return 0
         
-    except ImportError as e:
-        print(f"❌ Missing dependency: {e}")
-        print("Install with: pip install googlesearch-python beautifulsoup4")
-        return 1
     except Exception as e:
         print(f"❌ Workflow error: {e}")
         import traceback

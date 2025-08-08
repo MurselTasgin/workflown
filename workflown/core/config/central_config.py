@@ -100,6 +100,25 @@ class CentralConfig:
             validator=lambda x: x.upper() in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         ))
         
+        # API Configuration
+        self.register_config_spec(ConfigSpec(
+            key="api.firecrawl.api_key",
+            default="",
+            required=False,
+            data_type=str,
+            description="Firecrawl API key for web crawling",
+            env_var="FIRECRAWL_API_KEY"
+        ))
+        
+        self.register_config_spec(ConfigSpec(
+            key="api.openai.api_key",
+            default="",
+            required=False,
+            data_type=str,
+            description="OpenAI API key",
+            env_var="OPENAI_API_KEY"
+        ))
+        
         self.register_config_spec(ConfigSpec(
             key="framework.max_concurrent_tasks",
             default=10,
@@ -237,12 +256,12 @@ class CentralConfig:
         ))
         
         self.register_config_spec(ConfigSpec(
-            key="azure_openai.max_tokens",
+            key="llm.output.max_tokens",
             default=2000,
             required=False,
             data_type=int,
-            description="Maximum tokens for Azure OpenAI requests",
-            env_var="AZURE_OPENAI_MAX_TOKENS",
+            description="Maximum tokens for LLM output",
+            env_var="LLM_OUTPUT_MAX_TOKENS",
             validator=lambda x: x > 0
         ))
         
@@ -254,6 +273,46 @@ class CentralConfig:
             description="Temperature for Azure OpenAI requests",
             env_var="AZURE_OPENAI_TEMPERATURE",
             validator=lambda x: 0.0 <= x <= 2.0
+        ))
+
+        # LLM input handling (composition) configuration
+        self.register_config_spec(ConfigSpec(
+            key="llm.input.max_input_tokens",
+            default=8000,
+            required=False,
+            data_type=int,
+            description="Maximum input tokens allowed when composing prompts for LLM",
+            env_var="LLM_INPUT_MAX_TOKENS",
+            validator=lambda x: x > 0
+        ))
+
+        self.register_config_spec(ConfigSpec(
+            key="llm.input.token_char_ratio",
+            default=4,
+            required=False,
+            data_type=int,
+            description="Approximate characters per token ratio for input truncation",
+            env_var="LLM_INPUT_TOKEN_CHAR_RATIO",
+            validator=lambda x: x > 0
+        ))
+
+        self.register_config_spec(ConfigSpec(
+            key="llm.input.enable_truncation",
+            default=True,
+            required=False,
+            data_type=bool,
+            description="Enable truncation of composed input if it exceeds limits",
+            env_var="LLM_INPUT_ENABLE_TRUNCATION"
+        ))
+
+        self.register_config_spec(ConfigSpec(
+            key="llm.input.max_sources",
+            default=0,
+            required=False,
+            data_type=int,
+            description="Limit number of sources included in composition (0 means no limit)",
+            env_var="LLM_INPUT_MAX_SOURCES",
+            validator=lambda x: x >= 0
         ))
         
         # Search API Configuration
@@ -671,8 +730,17 @@ class CentralConfig:
             "deployment_name": self.get("azure_openai.deployment_name"),
             "model_name": self.get("azure_openai.model_name"),
             "api_version": self.get("azure_openai.api_version"),
-            "max_tokens": self.get("azure_openai.max_tokens"),
+            "max_tokens": self.get("llm.output.max_tokens"),
             "temperature": self.get("azure_openai.temperature")
+        }
+
+    def get_llm_input_config(self) -> Dict[str, Any]:
+        """Get LLM input composition configuration."""
+        return {
+            "max_input_tokens": self.get("llm.input.max_input_tokens"),
+            "token_char_ratio": self.get("llm.input.token_char_ratio"),
+            "enable_truncation": self.get("llm.input.enable_truncation"),
+            "max_sources": self.get("llm.input.max_sources"),
         }
     
     def get_search_config(self) -> Dict[str, Any]:
@@ -744,7 +812,7 @@ class CentralConfig:
                 "deployment_name": self.get("azure_openai.deployment_name"),
                 "model_name": self.get("azure_openai.model_name"),
                 "api_version": self.get("azure_openai.api_version"),
-                "max_tokens": self.get("azure_openai.max_tokens"),
+                "max_tokens": self.get("llm.output.max_tokens"),
                 "temperature": self.get("azure_openai.temperature")
             },
             "logging": {

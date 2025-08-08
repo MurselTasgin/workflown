@@ -349,6 +349,27 @@ class WorkflownLogger:
         child.handlers = self.handlers.copy()
         return child
 
+    # ------------------------------------------------------------------
+    # Sync helpers for use in non-async contexts
+    # ------------------------------------------------------------------
+    def _run_async_safely(self, coro) -> None:
+        """Run or schedule an async logging coroutine without requiring await."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+        except RuntimeError:
+            # No running loop
+            asyncio.run(coro)
+
+    def info_sync(self, message: str, **kwargs) -> None:
+        self._run_async_safely(self.info(message, **kwargs))
+
+    def warning_sync(self, message: str, **kwargs) -> None:
+        self._run_async_safely(self.warning(message, **kwargs))
+
+    def error_sync(self, message: str, exception: Exception = None, **kwargs) -> None:
+        self._run_async_safely(self.error(message, exception=exception, **kwargs))
+
 
 # Global logger registry
 _loggers: Dict[str, WorkflownLogger] = {}
